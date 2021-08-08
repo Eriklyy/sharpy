@@ -59,11 +59,11 @@ class Variable:
         if self.node is not None:
             # structural variables for now
             try:
-                #Look for the variables in time_step_info
+                # Look for the variables in time_step_info
                 variable = getattr(data.structure.timestep_info[timestep_index], self.name)
             except AttributeError:
                 try:
-                    #First get the dict postproc_cell and the try to find the variable in it.
+                    # First get the dict postproc_cell and the try to find the variable in it.
                     get_postproc_cell = getattr(data.structure.timestep_info[timestep_index], 'postproc_cell')
                     variable = get_postproc_cell[self.name]
                 except (KeyError, AttributeError):
@@ -71,7 +71,7 @@ class Variable:
                     logger.error(msg)
                     raise IndexError(msg)
 
-            #Needed for for_pos and for_vel since they are arrays.
+            # Needed for for_pos and for_vel since they are arrays.
             if len(variable.shape) == 1:
                 try:
                     value = variable[self.node, self.index]

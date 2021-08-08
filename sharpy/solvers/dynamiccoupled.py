@@ -443,22 +443,22 @@ class DynamicCoupled(BaseSolver):
 
     def network_loop(self, in_queue, out_queue, finish_event):
         # runs in a separate thread from time_loop()
-        out_network, in_network = self.network_loader.get_networks()
-        out_network.set_queue(out_queue)
+        inout_network = self.network_loader.get_networks()
+        inout_network.set_out_queue(out_queue)
+        inout_network.set_message_length(self.set_of_variables.input_msg_len)
+        inout_network.set_in_queue(in_queue)
 
-        in_network.set_message_length(self.set_of_variables.input_msg_len)
-        in_network.set_queue(in_queue)
 
         previous_queue_empty = True
         while not finish_event.is_set():
 
             # selector version
             events = network_interface.sel.select(timeout=1)
-            if out_network.queue.empty() and not previous_queue_empty:
-                out_network.set_selector_events_mask('r')
+            if inout_network.outqueue.empty() and not previous_queue_empty:
+                inout_network.set_selector_events_mask('r')
                 previous_queue_empty = True
-            elif not out_network.queue.empty() and previous_queue_empty:
-                out_network.set_selector_events_mask('w')
+            elif not inout_network.outqueue.empty() and previous_queue_empty:
+                inout_network.set_selector_events_mask('w')
                 previous_queue_empty = False
 
             try:
@@ -467,9 +467,7 @@ class DynamicCoupled(BaseSolver):
             except KeyboardInterrupt:
                 break
 
-        # close sockets
-        in_network.close()
-        out_network.close()
+        inout_network.close()
 
     def time_loop(self, in_queue=None, out_queue=None, finish_event=None):
         self.logger.debug('Inside time loop')

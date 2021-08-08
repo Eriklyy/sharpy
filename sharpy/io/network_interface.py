@@ -108,6 +108,10 @@ class NetworkLoader:
     settings_default['output_network_settings'] = dict()
     settings_description['output_network_settings'] = 'Settings for the output network ' \
                                                       ':class:`~sharpy.io.network_interface.OutNetwork`.'
+    settings_types['inout_network_settings'] = 'dict'
+    settings_default['inout_network_settings'] = dict()
+    settings_description['inout_network_settings'] = 'Settings for the inout network ' \
+                                                      ':class:`~sharpy.io.network_interface.OutNetwork`.'
 
     settings_types['send_output_to_all_clients'] = 'bool'
     settings_default['send_output_to_all_clients'] = False
@@ -170,23 +174,16 @@ class NetworkLoader:
 
     def get_networks(self, networks='inout'):
         to_return = []
-        if networks == 'out' or networks == 'inout':
-            logger.info('Initialising output network')
-            out_network = OutNetwork()
-            out_network.initialise('w', in_settings=self.settings['output_network_settings'])
-            out_network.set_byte_ordering(self.byte_ordering)
-            to_return.append(out_network)
 
-        if networks == 'in' or networks == 'inout':
+        if networks == 'in' or networks == 'inout' or networks == 'out':
             logger.info('Initialising input network')
-            in_network = InNetwork()
-            in_network.initialise('r', in_settings=self.settings['input_network_settings'])
-            in_network.set_byte_ordering(self.byte_ordering)
-            to_return.append(in_network)
+            inout_network = Network()
+            inout_network.initialise('r', in_settings=self.settings['inout_network_settings'])
+            inout_network.set_byte_ordering(self.byte_ordering)
+            to_return.append(inout_network)
 
         if self.settings['send_output_to_all_clients'] and networks == 'inout':
-            out_network.set_client_list(client_list)
-            in_network.set_client_list(client_list)
+            inout_network.set_client_list(client_list)
 
         if len(to_return) == 2:
             return tuple(to_return)
@@ -201,6 +198,7 @@ class Network:
     Contains the basic methods. See ``InNetwork`` and ``OutNetwork`` for specific settings pertaining to the
     input and output sockets.
     """
+
     settings_types = dict()
     settings_default = dict()
     settings_description = dict()
@@ -212,6 +210,20 @@ class Network:
     settings_types['port'] = 'int'
     settings_default['port'] = 65000
     settings_description['port'] = 'Own port.'
+
+    settings_types['send_on_demand'] = 'bool'
+    settings_default['send_on_demand'] = True
+    settings_description['send_on_demand'] = 'Waits for a signal demanding the output data. Else, sends to destination' \
+                                             ' buffer'
+
+    settings_types['destination_address'] = 'list(str)'
+    settings_default['destination_address'] = list()# add check to raise error if send_on_demand false and this is empty
+    settings_description['destination_address'] = 'List of addresses to send output data. If ``send_on_demand`` is ' \
+                                                  '``False`` this is a required setting.'
+
+    settings_types['destination_ports'] = 'list(int)'
+    settings_default['destination_ports'] = list()
+    settings_description['destination_ports'] = 'List of ports number for the destination addresses.'
 
     settings_table = settings.SettingsTable()
     __doc__ += settings_table.generate(settings_types, settings_default, settings_description)
@@ -225,11 +237,16 @@ class Network:
 
         self.clients = list()
 
-        self.queue = None  # queue object
+        self.inqueue = None  # queue object
+        self.outqueue = None  # queue object
 
         self.settings = None
 
         self._byte_ordering = '<'
+
+        super().__init__()
+        self._in_message_length = 1024
+        self._recv_buffer = b''
 
     def set_byte_ordering(self, value):
         self._byte_ordering = value
@@ -265,6 +282,12 @@ class Network:
         self.sock.setblocking(False)
         sel.register(self.sock, events, data=self)
 
+        if self.settings['send_on_demand'] is False and len(self.settings['destination_address']) == 0:
+            logger.warning('No destination host address provided')
+
+        clients = list(zip(self.settings['destination_address'], self.settings['destination_ports']))
+        self.add_client(clients)
+
     def send(self, msg, dest_addr):
         if type(dest_addr) is list:
             for dest in dest_addr:
@@ -272,8 +295,11 @@ class Network:
         elif type(dest_addr) is tuple:
             self._sendto(msg, dest_addr)
 
-    def set_queue(self, queue):
-        self.queue = queue
+    def set_out_queue(self, queue):
+        self.outqueue = queue
+
+    def set_in_queue(self, queue):
+        self.inqueue = queue
 
     def _sendto(self, msg, address):
         logger.debug('Network - Sending')
@@ -287,10 +313,6 @@ class Network:
         # r_msg = struct.unpack('f', r_msg)  # need to move decoding to dedicated message processing
         return r_msg
         # return recv_data
-
-    def process_events(self, mask):  # should only have the relevant queue
-        logger.debug('Should not be here')
-        pass
 
     def add_client(self, client_addr):
         if type(client_addr) is tuple:
@@ -310,69 +332,41 @@ class Network:
         self.sock.close()
         logger.info('Closed socket')
 
-
-class OutNetwork(Network):
-    """Output network socket settings
-
-    If ``send_on_demand`` is ``True``, SHARPy will only output data when it receives a request for it. The request
-    message can be any message under 1024 bytes. SHARPy will reply to the socket that sent the request with the latest
-    time step information. Otherwise, it will send data at the end of each time step to the specified destination
-    clients.
-
-    If the :class:`~sharpy.io.network_interface.NetworkLoader` setting ``send_output_to_all_clients`` is ``True``, then
-    the clients from which the input signal is received will also be added to the destination client address book.
-
-    Note:
-        If sending/receiving data across the net or LAN, make sure that your firewall has the desired ports open,
-        otherwise the signals will not make it through.
-    """
-    settings_types = Network.settings_types.copy()
-    settings_default = Network.settings_default.copy()
-    settings_description = Network.settings_description.copy()
-
-    settings_types['port'] = 'int'
-    settings_default['port'] = 65000
-    settings_description['port'] = 'Own port for output network'
-
-    settings_types['send_on_demand'] = 'bool'
-    settings_default['send_on_demand'] = True
-    settings_description['send_on_demand'] = 'Waits for a signal demanding the output data. Else, sends to destination' \
-                                             ' buffer'
-
-    settings_types['destination_address'] = 'list(str)'
-    settings_default['destination_address'] = list()  # add check to raise error if send_on_demand false and this is empty
-    settings_description['destination_address'] = 'List of addresses to send output data. If ``send_on_demand`` is ' \
-                                                  '``False`` this is a required setting.'
-
-    settings_types['destination_ports'] = 'list(int)'
-    settings_default['destination_ports'] = list()
-    settings_description['destination_ports'] = 'List of ports number for the destination addresses.'
-
-    settings_table = settings.SettingsTable()
-    __doc__ += settings_table.generate(settings_types, settings_default, settings_description)
-
-    def initialise(self, mode, in_settings):
-        super().initialise(mode, in_settings)
-
-        if self.settings['send_on_demand'] is False and len(self.settings['destination_address']) == 0:
-            logger.warning('No destination host address provided')
-
-        clients = list(zip(self.settings['destination_address'], self.settings['destination_ports']))
-        self.add_client(clients)
+    ##new part out of out and in network
+    def set_message_length(self, value):
+        self._in_message_length = value
+        logger.debug('Set input signal message size to {} bytes'.format(self._in_message_length))
 
     def process_events(self, mask):
+        self.sock.setblocking(False)
 
-        if mask and selectors.EVENT_READ and not self.queue.empty():
+        if mask and selectors.EVENT_READ and not self.outqueue.empty():
             if self.settings['send_on_demand']:
                 logger.info('Out Network - waiting for request for data')
                 msg = self.receive()
                 # get variable that has been demanded, this would be easy if a SetOfVariables was sent in the queue
                 # logger.info('Received request for data {}'.format(msg))
                 logger.debug('Received request for data')
-        if mask and selectors.EVENT_WRITE and not self.queue.empty():
+        if mask and selectors.EVENT_READ:
+            try:
+                logger.info('In Network - waiting for input data of size {} bytes'.format(self._in_message_length))
+                msg = self.receive(self._in_message_length)
+                self._recv_buffer += msg
+                # any required processing
+                # send list of tuples
+                if len(self._recv_buffer) == self._in_message_length:
+                    logger.info('In Network - {}/{} bytes read'.format(len(self._recv_buffer), self._in_message_length))
+                    list_of_variables = message_interface.decoder(self._recv_buffer, byte_ordering=self._byte_ordering)
+                    self.inqueue.put(list_of_variables)
+                    logger.debug('In Network - put data in the queue')
+                    self._recv_buffer = b''  # clean up
+            except socket.error:
+                pass
+
+        if mask and selectors.EVENT_WRITE and not self.outqueue.empty():
             logger.debug('Out Network ready to receive from the queue')
             # value = self.queue.get()  # check that it waits for the queue not to be empty
-            set_of_vars = self.queue.get()  # always gets latest time step info
+            set_of_vars = self.outqueue.get()  # always gets latest time step info
             logger.debug('Out Network - got message from queue')
             # for out_idx in set_of_vars.out_variables:
             #     value = set_of_vars[out_idx].value
@@ -380,50 +374,6 @@ class OutNetwork(Network):
             logger.info('Message of length {} bytes ready to send'.format(len(value)))
             self.send(value, self.clients)
                 # self.send(value, self.clients)
-
-
-class InNetwork(Network):
-    """
-    Input Network socket settings
-
-    Note:
-        If sending/receiving data across the net or LAN, make sure that your firewall has the desired ports open,
-        otherwise the signals will not make it through.
-    """
-    settings_types = Network.settings_types.copy()
-    settings_default = Network.settings_default.copy()
-    settings_description = Network.settings_description.copy()
-
-    settings_types['port'] = 'int'
-    settings_default['port'] = 65001
-    settings_description['port'] = 'Own port for input network'
-
-    settings_table = settings.SettingsTable()
-    __doc__ += settings_table.generate(settings_types, settings_default, settings_description)
-
-    def __init__(self):
-        super().__init__()
-        self._in_message_length = 1024
-        self._recv_buffer = b''
-
-    def set_message_length(self, value):
-        self._in_message_length = value
-        logger.debug('Set input signal message size to {} bytes'.format(self._in_message_length))
-
-    def process_events(self, mask):
-        self.sock.setblocking(False)
-        if mask and selectors.EVENT_READ:
-            logger.info('In Network - waiting for input data of size {} bytes'.format(self._in_message_length))
-            msg = self.receive(self._in_message_length)
-            self._recv_buffer += msg
-            # any required processing
-            # send list of tuples
-            if len(self._recv_buffer) == self._in_message_length:
-                logger.info('In Network - {}/{} bytes read'.format(len(self._recv_buffer), self._in_message_length))
-                list_of_variables = message_interface.decoder(self._recv_buffer, byte_ordering=self._byte_ordering)
-                self.queue.put(list_of_variables)
-                logger.debug('In Network - put data in the queue')
-                self._recv_buffer = b''  # clean up
 
 
 def get_events(mode):
